@@ -5,9 +5,9 @@ from urllib.parse import urlparse
 from email.header import Header
 from datetime import datetime, timedelta, timezone
 
-# ── 1. [본인 정보 입력] Supabase 설정 ──────────────────────────────
-RAW_SUPABASE_URL = "https://drgiuzphovgqmelckjey.supabase.co"
-RAW_SUPABASE_KEY = "sb_publishable_DiWIz_z7TkqWELKFdwEuqQ_H_1ME8pP"
+# ── 1. Streamlit 비밀 금고(Secrets)에서 정보 가져오기 ──────────────
+RAW_SUPABASE_URL = st.secrets["https://drgiuzphovgqmelckjey.supabase.co"]
+RAW_SUPABASE_KEY = st.secrets["sb_publishable_DiWIz_z7TkqWELKFdwEuqQ_H_1ME8pP"]
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
@@ -123,7 +123,6 @@ else:
         st.rerun()
 
 # ── 4. 안정적인 네이티브 자동 새로고침 ─────────────────────────────
-# 외부 부품 대신 파이썬 기본 기능을 사용해 에러를 원천 차단합니다.
 if state["is_running"]:
     time.sleep(5)
     st.rerun()
