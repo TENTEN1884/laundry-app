@@ -6,8 +6,8 @@ from email.header import Header
 from datetime import datetime, timedelta, timezone
 
 # ── 1. Streamlit 비밀 금고(Secrets)에서 정보 가져오기 ──────────────
-RAW_SUPABASE_URL = st.secrets["https://drgiuzphovgqmelckjey.supabase.co"]
-RAW_SUPABASE_KEY = st.secrets["sb_publishable_DiWIz_z7TkqWELKFdwEuqQ_H_1ME8pP"]
+RAW_SUPABASE_URL = st.secrets["SUPABASE_URL"] # ✅ 이름표를 부르면 금고에서 알아서 꺼내옵니다.
+RAW_SUPABASE_KEY = st.secrets["SUPABASE_KEY"] # ✅ 이름표를 부르면 금고에서 알아서 꺼내옵니다.
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
