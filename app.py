@@ -6,8 +6,8 @@ from email.header import Header
 from datetime import datetime, timedelta, timezone
 
 # ── 1. Streamlit 비밀 금고(Secrets)에서 정보 가져오기 ──────────────
-RAW_SUPABASE_URL = st.secrets["SUPABASE_URL"] # ✅ 이름표를 부르면 금고에서 알아서 꺼내옵니다.
-RAW_SUPABASE_KEY = st.secrets["SUPABASE_KEY"] # ✅ 이름표를 부르면 금고에서 알아서 꺼내옵니다.
+RAW_SUPABASE_URL = st.secrets["SUPABASE_URL"]
+RAW_SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
@@ -19,6 +19,9 @@ SUPABASE_KEY = RAW_SUPABASE_KEY.strip()
 
 CHANNEL = "laundry-myhome-alarm-101"
 NTFY_URL = f"https://ntfy.sh/{CHANNEL}"
+
+# 한국/일본 표준시 (UTC+9) - 완료 예정 시각을 로컬 시간으로 보여주기 위함
+KST = timezone(timedelta(hours=9))
 
 SUPABASE_HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -33,7 +36,7 @@ def load_state():
         url = f"{SUPABASE_URL}/rest/v1/laundry_state"
         params = {"id": "eq.1", "select": "*"}
         res = requests.get(url, headers=SUPABASE_HEADERS, params=params, timeout=5)
-        
+
         if res.status_code == 200:
             data = res.json()
             if data and len(data) > 0:
@@ -42,7 +45,8 @@ def load_state():
                 return {
                     "is_running": bool(row.get("is_running", False)),
                     "end_time": end_time,
-                    "notified": bool(row.get("notified", False))
+                    "notified": bool(row.get("notified", False)),
+                    "pin": row.get("pin"),
                 }
             elif len(data) == 0:
                 requests.post(url, headers=SUPABASE_HEADERS, json={"id": 1, "is_running": False}, timeout=5)
@@ -50,7 +54,7 @@ def load_state():
             st.error(f"Supabase 오류: {res.text}")
     except Exception as e:
         st.error(f"연결 오류: {e}")
-    return {"is_running": False, "end_time": None, "notified": False}
+    return {"is_running": False, "end_time": None, "notified": False, "pin": None}
 
 def save_state(state):
     try:
@@ -61,6 +65,7 @@ def save_state(state):
             "is_running": state["is_running"],
             "end_time": end_time_str,
             "notified": state["notified"],
+            "pin": state.get("pin"),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
         requests.patch(url, headers=SUPABASE_HEADERS, params=params, json=payload, timeout=5)
@@ -89,12 +94,14 @@ if state["is_running"] and state["end_time"]:
         remaining_minutes = int(remaining_seconds // 60)
         remaining_secs = int(remaining_seconds % 60)
 
+        end_time_local = state["end_time"].astimezone(KST) if state["end_time"].tzinfo else state["end_time"]
+
         st.error("🔴 현재 세탁기가 작동 중입니다!")
         col1, col2 = st.columns(2)
         with col1:
             st.metric("남은 시간", f"{remaining_minutes}분 {remaining_secs}초")
         with col2:
-            st.metric("완료 예정", state["end_time"].strftime("%H:%M"))
+            st.metric("완료 예정 시각 (24시간제)", end_time_local.strftime("%H:%M"))
     else:
         st.warning("🟡 세탁이 완료되었습니다! 빨래를 수거해주세요.")
         if not state["notified"]:
@@ -108,19 +115,35 @@ st.divider()
 
 if not state["is_running"]:
     st.subheader("새 세탁 시작")
-    duration = st.number_input("소요 시간(분)을 입력하세요", min_value=5, max_value=180, value=45, step=5)
-    if st.button("세탁 시작하기 🚀", type="primary", use_container_width=True):
-        new_state = {
-            "is_running": True,
-            "end_time": datetime.now(timezone.utc) + timedelta(minutes=int(duration)),
-            "notified": False,
-        }
-        save_state(new_state)
-        st.rerun()
+    with st.form("start_form"):
+        duration = st.number_input("소요 시간(분)을 입력하세요", min_value=5, max_value=180, value=45, step=5)
+        pin = st.text_input("본인확인용 비밀번호 4자리를 입력하세요", max_chars=4, type="password")
+        submitted = st.form_submit_button("세탁 시작하기 🚀", type="primary", use_container_width=True)
+
+        if submitted:
+            if not (pin.isdigit() and len(pin) == 4):
+                st.error("비밀번호는 숫자 4자리로 입력해주세요.")
+            else:
+                new_state = {
+                    "is_running": True,
+                    "end_time": datetime.now(timezone.utc) + timedelta(minutes=int(duration)),
+                    "notified": False,
+                    "pin": pin,
+                }
+                save_state(new_state)
+                st.rerun()
 else:
-    if st.button("✅ 빨래 수거 완료 (세탁기 비우기)", use_container_width=True):
-        save_state({"is_running": False, "end_time": None, "notified": False})
-        st.rerun()
+    st.subheader("빨래 수거 완료 처리")
+    with st.form("complete_form"):
+        input_pin = st.text_input("본인확인용 비밀번호 4자리를 입력하세요", max_chars=4, type="password")
+        confirmed = st.form_submit_button("✅ 빨래 수거 완료 (세탁기 비우기)", use_container_width=True)
+
+        if confirmed:
+            if input_pin == state.get("pin"):
+                save_state({"is_running": False, "end_time": None, "notified": False, "pin": None})
+                st.rerun()
+            else:
+                st.error("비밀번호가 일치하지 않습니다.")
 
 # ── 4. 안정적인 네이티브 자동 새로고침 ─────────────────────────────
 if state["is_running"]:
