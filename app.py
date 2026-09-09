@@ -82,6 +82,21 @@ def send_ntfy_notification(ntfy_url, title, message):
 # ── 3. UI 화면 렌더링 ─────────────────────────────────────────────
 st.set_page_config(page_title="세탁실 현황", layout="centered")
 
+# 화면이 자동으로 자주 새로고침되면서 이전 화면 요소가 옅게 남았다가 사라지는
+# 전환 애니메이션(잔상 현상)이 보일 수 있어, 관련 트랜지션/애니메이션을 꺼서
+# 화면이 바로바로 전환되도록 한다.
+st.markdown(
+    """
+    <style>
+    [data-testid="stAppViewContainer"] * {
+        transition: none !important;
+        animation: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 state = load_state()
 
 st.title("🧺 세탁기 사용 현황")
