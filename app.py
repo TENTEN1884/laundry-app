@@ -30,12 +30,26 @@ SUPABASE_HEADERS = {
     "Prefer": "return=representation"
 }
 
+# 배포 환경에서는 첫 요청이 느릴 때가 있어(콜드 스타트 등), 타임아웃을 넉넉히 주고
+# 실패 시 한 번 더 재시도해서 일시적인 "연결 오류"를 줄인다.
+def request_with_retry(method, url, retries=2, **kwargs):
+    kwargs.setdefault("timeout", 10)
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return requests.request(method, url, **kwargs)
+        except Exception as e:
+            last_error = e
+            if attempt < retries - 1:
+                time.sleep(1)
+    raise last_error
+
 # ── 2. Supabase 상태 관리 함수 ────────────────────────────────────
 def load_state():
     try:
         url = f"{SUPABASE_URL}/rest/v1/laundry_state"
         params = {"id": "eq.1", "select": "*"}
-        res = requests.get(url, headers=SUPABASE_HEADERS, params=params, timeout=5)
+        res = request_with_retry("GET", url, headers=SUPABASE_HEADERS, params=params)
 
         if res.status_code == 200:
             data = res.json()
@@ -49,7 +63,7 @@ def load_state():
                     "pin": row.get("pin"),
                 }
             elif len(data) == 0:
-                requests.post(url, headers=SUPABASE_HEADERS, json={"id": 1, "is_running": False}, timeout=5)
+                request_with_retry("POST", url, headers=SUPABASE_HEADERS, json={"id": 1, "is_running": False})
         else:
             st.error(f"Supabase 오류: {res.text}")
     except Exception as e:
@@ -68,7 +82,7 @@ def save_state(state):
             "pin": state.get("pin"),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
-        requests.patch(url, headers=SUPABASE_HEADERS, params=params, json=payload, timeout=5)
+        request_with_retry("PATCH", url, headers=SUPABASE_HEADERS, params=params, json=payload)
     except Exception as e:
         st.error(f"저장 오류: {e}")
 
@@ -77,6 +91,14 @@ def send_ntfy_notification(ntfy_url, title, message):
         encoded_title = Header(title, "utf-8").encode()
         requests.post(ntfy_url, data=message.encode("utf-8"), headers={"Title": encoded_title, "Priority": "high", "Tags": "washing_machine"}, timeout=5)
     except:
+        pass
+
+# ── 방문/클릭 통계 (포트폴리오용 사용 데이터) ──────────────────────
+def log_event(event_type):
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/analytics_events"
+        requests.post(url, headers=SUPABASE_HEADERS, json={"event_type": event_type}, timeout=5)
+    except Exception:
         pass
 
 # ── 3. UI 화면 렌더링 ─────────────────────────────────────────────
@@ -96,6 +118,10 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+if "visit_logged" not in st.session_state:
+    log_event("page_view")
+    st.session_state["visit_logged"] = True
 
 state = load_state()
 
@@ -146,6 +172,7 @@ if not state["is_running"]:
                     "pin": pin,
                 }
                 save_state(new_state)
+                log_event("start_wash")
                 st.rerun()
 else:
     st.subheader("빨래 수거 완료 처리")
@@ -156,6 +183,7 @@ else:
         if confirmed:
             if input_pin == state.get("pin"):
                 save_state({"is_running": False, "end_time": None, "notified": False, "pin": None})
+                log_event("complete_wash")
                 st.rerun()
             else:
                 st.error("비밀번호가 일치하지 않습니다.")
