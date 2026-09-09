@@ -61,6 +61,7 @@ def load_state():
                     "end_time": end_time,
                     "notified": bool(row.get("notified", False)),
                     "pin": row.get("pin"),
+                    "room_number": row.get("room_number"),
                 }
             elif len(data) == 0:
                 request_with_retry("POST", url, headers=SUPABASE_HEADERS, json={"id": 1, "is_running": False})
@@ -68,7 +69,7 @@ def load_state():
             st.error(f"Supabase 오류: {res.text}")
     except Exception as e:
         st.error(f"연결 오류: {e}")
-    return {"is_running": False, "end_time": None, "notified": False, "pin": None}
+    return {"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None}
 
 def save_state(state):
     try:
@@ -80,6 +81,7 @@ def save_state(state):
             "end_time": end_time_str,
             "notified": state["notified"],
             "pin": state.get("pin"),
+            "room_number": state.get("room_number"),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
         request_with_retry("PATCH", url, headers=SUPABASE_HEADERS, params=params, json=payload)
@@ -136,8 +138,12 @@ if state["is_running"] and state["end_time"]:
         remaining_secs = int(remaining_seconds % 60)
 
         end_time_local = state["end_time"].astimezone(KST) if state["end_time"].tzinfo else state["end_time"]
+        room_number = state.get("room_number")
 
-        st.error("🔴 현재 세탁기가 작동 중입니다!")
+        if room_number:
+            st.error(f"🔴 {room_number}호 세탁물이 작동 중입니다!")
+        else:
+            st.error("🔴 현재 세탁기가 작동 중입니다!")
         col1, col2 = st.columns(2)
         with col1:
             st.metric("남은 시간", f"{remaining_minutes}분 {remaining_secs}초")
@@ -157,12 +163,15 @@ st.divider()
 if not state["is_running"]:
     st.subheader("새 세탁 시작")
     with st.form("start_form"):
+        room_number = st.text_input("방 번호를 입력하세요 (예: 2008)")
         duration = st.number_input("소요 시간(분)을 입력하세요", min_value=5, max_value=180, value=45, step=5)
         pin = st.text_input("본인확인용 비밀번호 4자리를 입력하세요", max_chars=4, type="password")
         submitted = st.form_submit_button("세탁 시작하기 🚀", type="primary", use_container_width=True)
 
         if submitted:
-            if not (pin.isdigit() and len(pin) == 4):
+            if not room_number.strip():
+                st.error("방 번호를 입력해주세요.")
+            elif not (pin.isdigit() and len(pin) == 4):
                 st.error("비밀번호는 숫자 4자리로 입력해주세요.")
             else:
                 new_state = {
@@ -170,19 +179,22 @@ if not state["is_running"]:
                     "end_time": datetime.now(timezone.utc) + timedelta(minutes=int(duration)),
                     "notified": False,
                     "pin": pin,
+                    "room_number": room_number.strip(),
                 }
                 save_state(new_state)
                 log_event("start_wash")
                 st.rerun()
 else:
     st.subheader("빨래 수거 완료 처리")
+    if state.get("room_number"):
+        st.caption(f"현재 세탁 중: {state['room_number']}호")
     with st.form("complete_form"):
         input_pin = st.text_input("본인확인용 비밀번호 4자리를 입력하세요", max_chars=4, type="password")
         confirmed = st.form_submit_button("✅ 빨래 수거 완료 (세탁기 비우기)", use_container_width=True)
 
         if confirmed:
             if input_pin == state.get("pin"):
-                save_state({"is_running": False, "end_time": None, "notified": False, "pin": None})
+                save_state({"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None})
                 log_event("complete_wash")
                 st.rerun()
             else:
