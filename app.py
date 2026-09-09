@@ -200,6 +200,9 @@ else:
             else:
                 st.error("비밀번호가 일치하지 않습니다.")
 
+st.divider()
+st.caption("🛠️ 오류가 발생하거나 앱이 작동하지 않을 때: [문의 채팅방](https://open.kakao.com/o/sDMzKNMi)")
+
 # ── 4. 안정적인 네이티브 자동 새로고침 ─────────────────────────────
 if state["is_running"]:
     time.sleep(5)
