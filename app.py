@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 # ── 1. Streamlit 비밀 금고(Secrets)에서 정보 가져오기 ──────────────
 RAW_SUPABASE_URL = st.secrets["SUPABASE_URL"]
 RAW_SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "")
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
@@ -199,6 +200,19 @@ else:
                 st.rerun()
             else:
                 st.error("비밀번호가 일치하지 않습니다.")
+
+    with st.expander("⚙️ 관리자"):
+        with st.form("admin_reset_form"):
+            admin_pw = st.text_input("관리자 비밀번호", type="password")
+            admin_confirmed = st.form_submit_button("🚨 강제 종료 (세탁기 비우기)", use_container_width=True)
+
+            if admin_confirmed:
+                if ADMIN_PASSWORD and admin_pw == ADMIN_PASSWORD:
+                    save_state({"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None})
+                    log_event("admin_reset")
+                    st.rerun()
+                else:
+                    st.error("관리자 비밀번호가 일치하지 않습니다.")
 
 st.divider()
 st.caption("🛠️ 오류가 발생하거나 앱이 작동하지 않을 때: [문의 채팅방](https://open.kakao.com/o/sDMzKNMi)")
