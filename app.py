@@ -63,6 +63,8 @@ def load_state():
                     "notified": bool(row.get("notified", False)),
                     "pin": row.get("pin"),
                     "room_number": row.get("room_number"),
+                    "auto_reset_at": row.get("auto_reset_at"),
+                    "auto_reset_room": row.get("auto_reset_room"),
                 }
             elif len(data) == 0:
                 request_with_retry("POST", url, headers=SUPABASE_HEADERS, json={"id": 1, "is_running": False})
@@ -70,7 +72,7 @@ def load_state():
             st.error(f"Supabase 오류: {res.text}")
     except Exception as e:
         st.error(f"연결 오류: {e}")
-    return {"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None}
+    return {"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None, "auto_reset_at": None, "auto_reset_room": None}
 
 def save_state(state):
     try:
@@ -83,6 +85,8 @@ def save_state(state):
             "notified": state["notified"],
             "pin": state.get("pin"),
             "room_number": state.get("room_number"),
+            "auto_reset_at": state.get("auto_reset_at"),
+            "auto_reset_room": state.get("auto_reset_room"),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
         request_with_retry("PATCH", url, headers=SUPABASE_HEADERS, params=params, json=payload)
@@ -132,6 +136,9 @@ st.title("🧺 세탁기 사용 현황")
 
 now = datetime.now(timezone.utc) if state["end_time"] and state["end_time"].tzinfo else datetime.now()
 
+# 시간 종료 후 이 시간(초) 동안 아무도 수거 완료 처리를 하지 않으면 자동으로 초기화한다.
+GRACE_SECONDS = 30 * 60
+
 if state["is_running"] and state["end_time"]:
     remaining_seconds = (state["end_time"] - now).total_seconds()
     if remaining_seconds > 0:
@@ -150,6 +157,19 @@ if state["is_running"] and state["end_time"]:
             st.metric("남은 시간", f"{remaining_minutes}분 {remaining_secs}초")
         with col2:
             st.metric("완료 예정 시각 (24시간제)", end_time_local.strftime("%H:%M"))
+    elif -remaining_seconds >= GRACE_SECONDS:
+        save_state({
+            "is_running": False,
+            "end_time": None,
+            "notified": False,
+            "pin": None,
+            "room_number": None,
+            "auto_reset_at": datetime.now(timezone.utc).isoformat(),
+            "auto_reset_room": state.get("room_number"),
+        })
+        log_event("auto_reset")
+        st.session_state.pop("my_pin", None)
+        st.rerun()
     else:
         st.warning("🟡 세탁이 완료되었습니다! 빨래를 수거해주세요.")
         if not state["notified"]:
@@ -157,6 +177,11 @@ if state["is_running"] and state["end_time"]:
             state["notified"] = True
             save_state(state)
 else:
+    if state.get("auto_reset_room"):
+        st.warning(
+            f"⚠️ {state['auto_reset_room']}호 세탁물이 시간 초과 후 {GRACE_SECONDS // 60}분 동안 "
+            "수거 확인이 없어 자동으로 초기화되었습니다. 사용 전 실제로 비어있는지 확인해주세요."
+        )
     st.success("🟢 현재 사용 가능합니다. 비어있어요!")
 
 st.divider()
@@ -183,23 +208,33 @@ if not state["is_running"]:
                     "room_number": room_number.strip(),
                 }
                 save_state(new_state)
+                st.session_state["my_pin"] = pin
                 log_event("start_wash")
                 st.rerun()
 else:
     st.subheader("빨래 수거 완료 처리")
     if state.get("room_number"):
         st.caption(f"현재 세탁 중: {state['room_number']}호")
-    with st.form("complete_form"):
-        input_pin = st.text_input("본인확인용 비밀번호 4자리를 입력하세요", max_chars=4, type="password")
-        confirmed = st.form_submit_button("✅ 빨래 수거 완료 (세탁기 비우기)", use_container_width=True)
 
-        if confirmed:
-            if input_pin == state.get("pin"):
-                save_state({"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None})
-                log_event("complete_wash")
-                st.rerun()
-            else:
-                st.error("비밀번호가 일치하지 않습니다.")
+    if state.get("pin") and st.session_state.get("my_pin") == state.get("pin"):
+        st.caption("✓ 이 브라우저에서 시작한 세탁물이라 비밀번호 없이 완료 처리할 수 있어요.")
+        if st.button("✅ 빨래 수거 완료 (세탁기 비우기)", use_container_width=True, key="quick_complete"):
+            save_state({"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None})
+            st.session_state.pop("my_pin", None)
+            log_event("complete_wash")
+            st.rerun()
+    else:
+        with st.form("complete_form"):
+            input_pin = st.text_input("본인확인용 비밀번호 4자리를 입력하세요", max_chars=4, type="password")
+            confirmed = st.form_submit_button("✅ 빨래 수거 완료 (세탁기 비우기)", use_container_width=True)
+
+            if confirmed:
+                if input_pin == state.get("pin"):
+                    save_state({"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None})
+                    log_event("complete_wash")
+                    st.rerun()
+                else:
+                    st.error("비밀번호가 일치하지 않습니다.")
 
     with st.expander("⚙️ 관리자"):
         with st.form("admin_reset_form"):
