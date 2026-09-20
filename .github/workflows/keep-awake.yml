@@ -1,0 +1,65 @@
+name: Keep Streamlit app awake
+
+on:
+  schedule:
+    - cron: '0 9,22 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping-and-wake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if app is asleep
+        id: check
+        run: |
+          curl -sL --max-time 20 -o page.html -w 'HTTP:%{http_code}\n' "https://laundry-app-3tbs64fhxr2g5bthddrykd.streamlit.app/"
+          if grep -qiE "zzzz|gone to sleep|wake this app up|get this app back up" page.html; then
+            echo "asleep=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "asleep=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.check.outputs.asleep == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Playwright
+        if: steps.check.outputs.asleep == 'true'
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Click wake-up button
+        if: steps.check.outputs.asleep == 'true'
+        run: |
+          python - <<'PYEOF'
+          import re
+          import sys
+          import time
+          from playwright.sync_api import sync_playwright
+
+          url = "https://laundry-app-3tbs64fhxr2g5bthddrykd.streamlit.app/"
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page()
+              page.goto(url, wait_until="networkidle", timeout=30000)
+
+              btn = page.get_by_text(re.compile("get this app back up", re.I))
+              if btn.count() == 0:
+                  btn = page.get_by_role("button", name=re.compile("wake", re.I))
+
+              if btn.count() > 0:
+                  btn.first.click()
+                  print("Clicked wake button, waiting for app to boot...")
+                  time.sleep(60)
+                  page.reload(wait_until="networkidle", timeout=30000)
+                  print("Reload done after wake attempt.")
+              else:
+                  print("Wake button not found.")
+                  sys.exit(1)
+
+              browser.close()
+          PYEOF
