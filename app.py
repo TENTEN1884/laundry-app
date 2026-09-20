@@ -179,8 +179,9 @@ if state["is_running"] and state["end_time"]:
 else:
     if state.get("auto_reset_room"):
         st.warning(
-            f"⚠️ {state['auto_reset_room']}호 세탁물이 시간 초과 후 {GRACE_SECONDS // 60}분 동안 "
-            "수거 확인이 없어 자동으로 초기화되었습니다. 사용 전 실제로 비어있는지 확인해주세요."
+            f"⚠️ {state['auto_reset_room']}호 세탁물이 초기화되었습니다. "
+            "(시간 초과 후 30분간 미수거 또는 다른 사용자의 조기 종료 처리) "
+            "사용 전 실제로 비어있는지 확인해주세요."
         )
     st.success("🟢 현재 사용 가능합니다. 비어있어요!")
 
@@ -235,6 +236,22 @@ else:
                     st.rerun()
                 else:
                     st.error("비밀번호가 일치하지 않습니다.")
+
+    with st.expander("🤔 세탁기가 이미 비어있는 것 같나요? (비밀번호 없이 조기 종료)"):
+        st.caption("예상 시간이 남아있어도, 세탁기가 실제로 멈춰있고 빨래가 없는 걸 직접 확인하셨다면 아래 버튼을 눌러주세요.")
+        if st.button("🔄 조기 종료 처리하고 내가 새로 시작할게요", use_container_width=True, key="early_release_button"):
+            save_state({
+                "is_running": False,
+                "end_time": None,
+                "notified": False,
+                "pin": None,
+                "room_number": None,
+                "auto_reset_at": datetime.now(timezone.utc).isoformat(),
+                "auto_reset_room": state.get("room_number"),
+            })
+            log_event("early_release")
+            st.session_state.pop("my_pin", None)
+            st.rerun()
 
     with st.expander("⚙️ 관리자"):
         with st.form("admin_reset_form"):
