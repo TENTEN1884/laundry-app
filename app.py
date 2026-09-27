@@ -20,6 +20,9 @@ KAKAO_CLIENT_SECRET = st.secrets.get("KAKAO_CLIENT_SECRET", "")
 LAUNDRY_STATE_ID = int(st.secrets.get("LAUNDRY_STATE_ID", 1))
 EMAIL_SMTP_ADDRESS = st.secrets.get("EMAIL_SMTP_ADDRESS", "")
 EMAIL_SMTP_APP_PASSWORD = st.secrets.get("EMAIL_SMTP_APP_PASSWORD", "")
+EMAIL_SMTP_HOST = st.secrets.get("EMAIL_SMTP_HOST", "smtp.gmail.com")
+EMAIL_SMTP_PORT = int(st.secrets.get("EMAIL_SMTP_PORT", 587))
+EMAIL_SMTP_LOGIN = st.secrets.get("EMAIL_SMTP_LOGIN", "") or EMAIL_SMTP_ADDRESS
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
@@ -119,9 +122,9 @@ def send_email(to_email, subject, body):
         msg["Subject"] = subject
         msg["From"] = EMAIL_SMTP_ADDRESS
         msg["To"] = to_email
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+        with smtplib.SMTP(EMAIL_SMTP_HOST, EMAIL_SMTP_PORT, timeout=10) as server:
             server.starttls()
-            server.login(EMAIL_SMTP_ADDRESS, EMAIL_SMTP_APP_PASSWORD)
+            server.login(EMAIL_SMTP_LOGIN, EMAIL_SMTP_APP_PASSWORD)
             server.sendmail(EMAIL_SMTP_ADDRESS, [to_email], msg.as_string())
     except Exception:
         pass
