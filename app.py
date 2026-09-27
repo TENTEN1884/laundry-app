@@ -13,6 +13,7 @@ RAW_SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "")
 KAKAO_REST_API_KEY = st.secrets.get("KAKAO_REST_API_KEY", "")
 KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "")
+KAKAO_CLIENT_SECRET = st.secrets.get("KAKAO_CLIENT_SECRET", "")
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
@@ -124,14 +125,17 @@ def kakao_login_url():
 
 def kakao_exchange_code(code):
     try:
+        payload = {
+            "grant_type": "authorization_code",
+            "client_id": KAKAO_REST_API_KEY,
+            "redirect_uri": KAKAO_REDIRECT_URI,
+            "code": code,
+        }
+        if KAKAO_CLIENT_SECRET:
+            payload["client_secret"] = KAKAO_CLIENT_SECRET
         res = requests.post(
             "https://kauth.kakao.com/oauth/token",
-            data={
-                "grant_type": "authorization_code",
-                "client_id": KAKAO_REST_API_KEY,
-                "redirect_uri": KAKAO_REDIRECT_URI,
-                "code": code,
-            },
+            data=payload,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=10,
         )
@@ -143,13 +147,16 @@ def kakao_exchange_code(code):
 
 def kakao_refresh_access_token(refresh_token):
     try:
+        payload = {
+            "grant_type": "refresh_token",
+            "client_id": KAKAO_REST_API_KEY,
+            "refresh_token": refresh_token,
+        }
+        if KAKAO_CLIENT_SECRET:
+            payload["client_secret"] = KAKAO_CLIENT_SECRET
         res = requests.post(
             "https://kauth.kakao.com/oauth/token",
-            data={
-                "grant_type": "refresh_token",
-                "client_id": KAKAO_REST_API_KEY,
-                "refresh_token": refresh_token,
-            },
+            data=payload,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=10,
         )
