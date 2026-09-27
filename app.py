@@ -265,7 +265,7 @@ def notify_all_kakao_users(text):
         send_kakao_talk_message(user, text)
 
 # ── 3. UI 화면 렌더링 ─────────────────────────────────────────────
-st.set_page_config(page_title="세탁실 현황", layout="centered")
+st.set_page_config(page_title="세탁실 현황 2", layout="centered")
 
 # 화면이 자동으로 자주 새로고침되면서 이전 화면 요소가 옅게 남았다가 사라지는
 # 전환 애니메이션(잔상 현상)이 보일 수 있어, 관련 트랜지션/애니메이션을 꺼서
@@ -345,7 +345,7 @@ elif st.session_state.get("kakao_id") is None and not st.session_state.get("kaka
 
 state = load_state()
 
-st.title("🧺 세탁기 사용 현황")
+st.title("🧺 세탁기 사용 현황 2")
 
 if KAKAO_REST_API_KEY:
     login_col1, login_col2 = st.columns([3, 1])
