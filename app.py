@@ -1,6 +1,8 @@
 import streamlit as st
 import requests
 import time
+import json
+import secrets as pysecrets
 from urllib.parse import urlparse
 from email.header import Header
 from datetime import datetime, timedelta, timezone
@@ -9,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 RAW_SUPABASE_URL = st.secrets["SUPABASE_URL"]
 RAW_SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "")
+KAKAO_REST_API_KEY = st.secrets.get("KAKAO_REST_API_KEY", "")
+KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "")
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
@@ -108,6 +112,158 @@ def log_event(event_type):
     except Exception:
         pass
 
+# ── 카카오 로그인 & 카카오톡 알림 ──────────────────────────────────
+def kakao_login_url():
+    return (
+        "https://kauth.kakao.com/oauth/authorize"
+        f"?client_id={KAKAO_REST_API_KEY}"
+        f"&redirect_uri={KAKAO_REDIRECT_URI}"
+        "&response_type=code"
+        "&scope=talk_message"
+    )
+
+def kakao_exchange_code(code):
+    try:
+        res = requests.post(
+            "https://kauth.kakao.com/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": KAKAO_REST_API_KEY,
+                "redirect_uri": KAKAO_REDIRECT_URI,
+                "code": code,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+    return None
+
+def kakao_refresh_access_token(refresh_token):
+    try:
+        res = requests.post(
+            "https://kauth.kakao.com/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": KAKAO_REST_API_KEY,
+                "refresh_token": refresh_token,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+    return None
+
+def kakao_get_user_id(access_token):
+    try:
+        res = requests.get(
+            "https://kapi.kakao.com/v2/user/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        if res.status_code == 200:
+            return res.json().get("id")
+    except Exception:
+        pass
+    return None
+
+def save_kakao_user(kakao_id, access_token, refresh_token, expires_in):
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat()
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/kakao_users"
+        payload = {
+            "kakao_id": kakao_id,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_expires_at": expires_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        request_with_retry(
+            "POST", url,
+            headers={**SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
+            params={"on_conflict": "kakao_id"},
+            json=payload,
+        )
+    except Exception:
+        pass
+
+def create_kakao_session(kakao_id):
+    token = pysecrets.token_urlsafe(32)
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/kakao_sessions"
+        request_with_retry("POST", url, headers=SUPABASE_HEADERS, json={"session_token": token, "kakao_id": kakao_id})
+        return token
+    except Exception:
+        return None
+
+def get_kakao_id_from_session(session_token):
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/kakao_sessions"
+        params = {"session_token": f"eq.{session_token}", "select": "kakao_id"}
+        res = request_with_retry("GET", url, headers=SUPABASE_HEADERS, params=params)
+        if res.status_code == 200:
+            data = res.json()
+            if data:
+                return data[0]["kakao_id"]
+    except Exception:
+        pass
+    return None
+
+def delete_kakao_session(session_token):
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/kakao_sessions"
+        request_with_retry("DELETE", url, headers=SUPABASE_HEADERS, params={"session_token": f"eq.{session_token}"})
+    except Exception:
+        pass
+
+def get_all_kakao_users():
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/kakao_users"
+        res = request_with_retry("GET", url, headers=SUPABASE_HEADERS, params={"select": "*"})
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+    return []
+
+def send_kakao_talk_message(kakao_user, text):
+    access_token = kakao_user["access_token"]
+    expires_at = datetime.fromisoformat(kakao_user["token_expires_at"])
+    if datetime.now(timezone.utc) >= expires_at:
+        refreshed = kakao_refresh_access_token(kakao_user["refresh_token"])
+        if not refreshed:
+            return
+        access_token = refreshed["access_token"]
+        save_kakao_user(
+            kakao_user["kakao_id"],
+            access_token,
+            refreshed.get("refresh_token", kakao_user["refresh_token"]),
+            refreshed.get("expires_in", 21599),
+        )
+    try:
+        template = json.dumps({
+            "object_type": "text",
+            "text": text,
+            "link": {"web_url": KAKAO_REDIRECT_URI, "mobile_web_url": KAKAO_REDIRECT_URI},
+        })
+        requests.post(
+            "https://kapi.kakao.com/v2/api/talk/memo/default/send",
+            headers={"Authorization": f"Bearer {access_token}"},
+            data={"template_object": template},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+def notify_all_kakao_users(text):
+    for user in get_all_kakao_users():
+        send_kakao_talk_message(user, text)
+
 # ── 3. UI 화면 렌더링 ─────────────────────────────────────────────
 st.set_page_config(page_title="세탁실 현황", layout="centered")
 
@@ -130,9 +286,92 @@ if "visit_logged" not in st.session_state:
     log_event("page_view")
     st.session_state["visit_logged"] = True
 
+# ── 카카오 로그인 처리 (자동 로그인 유지 포함) ──────────────────────
+LOCAL_STORAGE_KEY = "laundry_kakao_session"
+
+if "kakao_id" not in st.session_state:
+    st.session_state["kakao_id"] = None
+
+query_params = st.query_params
+
+if "code" in query_params and KAKAO_REST_API_KEY:
+    token_data = kakao_exchange_code(query_params["code"])
+    if token_data and token_data.get("access_token"):
+        kakao_id = kakao_get_user_id(token_data["access_token"])
+        if kakao_id:
+            save_kakao_user(
+                kakao_id,
+                token_data["access_token"],
+                token_data.get("refresh_token", ""),
+                token_data.get("expires_in", 21599),
+            )
+            session_token = create_kakao_session(kakao_id)
+            st.session_state["kakao_id"] = kakao_id
+            log_event("kakao_login")
+            st.query_params.clear()
+            st.components.v1.html(
+                f"""
+                <script>
+                try {{ localStorage.setItem("{LOCAL_STORAGE_KEY}", "{session_token}"); }} catch (e) {{}}
+                window.location.href = window.location.pathname;
+                </script>
+                """,
+                height=0,
+            )
+            st.stop()
+    st.query_params.clear()
+elif "session" in query_params:
+    kakao_id = get_kakao_id_from_session(query_params["session"])
+    if kakao_id:
+        st.session_state["kakao_id"] = kakao_id
+        st.session_state["kakao_session_token"] = query_params["session"]
+elif st.session_state.get("kakao_id") is None and not st.session_state.get("kakao_checked"):
+    st.session_state["kakao_checked"] = True
+    st.components.v1.html(
+        f"""
+        <script>
+        try {{
+            const t = localStorage.getItem("{LOCAL_STORAGE_KEY}");
+            if (t) {{
+                const url = new URL(window.location.href);
+                url.searchParams.set("session", t);
+                window.location.href = url.toString();
+            }}
+        }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+    )
+
 state = load_state()
 
 st.title("🧺 세탁기 사용 현황")
+
+if KAKAO_REST_API_KEY:
+    login_col1, login_col2 = st.columns([3, 1])
+    with login_col1:
+        if st.session_state.get("kakao_id"):
+            st.caption("💬 카카오 로그인됨 — 세탁 완료 시 카카오톡으로 알려드려요.")
+        else:
+            st.caption(f"[💬 카카오로 로그인하고 완료 알림 받기]({kakao_login_url()})")
+    with login_col2:
+        if st.session_state.get("kakao_id"):
+            if st.button("로그아웃", key="kakao_logout", use_container_width=True):
+                token = st.session_state.get("kakao_session_token")
+                if token:
+                    delete_kakao_session(token)
+                st.session_state["kakao_id"] = None
+                st.session_state["kakao_checked"] = False
+                st.components.v1.html(
+                    f"""
+                    <script>
+                    try {{ localStorage.removeItem("{LOCAL_STORAGE_KEY}"); }} catch (e) {{}}
+                    window.location.href = window.location.pathname;
+                    </script>
+                    """,
+                    height=0,
+                )
+                st.stop()
 
 now = datetime.now(timezone.utc) if state["end_time"] and state["end_time"].tzinfo else datetime.now()
 
@@ -174,13 +413,17 @@ if state["is_running"] and state["end_time"]:
         st.warning("🟡 세탁이 완료되었습니다! 빨래를 수거해주세요.")
         if not state["notified"]:
             send_ntfy_notification(NTFY_URL, "🧺 세탁 완료!", "빨래가 끝났습니다. 세탁물을 수거해 주세요!")
+            room_number = state.get("room_number")
+            kakao_text = f"{room_number}호 빨래가 끝났습니다! 세탁물을 수거해 주세요." if room_number else "빨래가 끝났습니다! 세탁물을 수거해 주세요."
+            notify_all_kakao_users(kakao_text)
             state["notified"] = True
             save_state(state)
 else:
     if state.get("auto_reset_room"):
         st.warning(
-            f"⚠️ {state['auto_reset_room']}호 세탁물이 시간 초과 후 {GRACE_SECONDS // 60}분 동안 "
-            "수거 확인이 없어 자동으로 초기화되었습니다. 사용 전 실제로 비어있는지 확인해주세요."
+            f"⚠️ {state['auto_reset_room']}호 세탁물이 초기화되었습니다. "
+            "(시간 초과 후 30분간 미수거 또는 다른 사용자의 조기 종료 처리) "
+            "사용 전 실제로 비어있는지 확인해주세요."
         )
     st.success("🟢 현재 사용 가능합니다. 비어있어요!")
 
@@ -235,6 +478,22 @@ else:
                     st.rerun()
                 else:
                     st.error("비밀번호가 일치하지 않습니다.")
+
+    with st.expander("🤔 세탁기가 이미 비어있는 것 같나요? (비밀번호 없이 조기 종료)"):
+        st.caption("예상 시간이 남아있어도, 세탁기가 실제로 멈춰있고 빨래가 없는 걸 직접 확인하셨다면 아래 버튼을 눌러주세요.")
+        if st.button("🔄 조기 종료 처리하고 내가 새로 시작할게요", use_container_width=True, key="early_release_button"):
+            save_state({
+                "is_running": False,
+                "end_time": None,
+                "notified": False,
+                "pin": None,
+                "room_number": None,
+                "auto_reset_at": datetime.now(timezone.utc).isoformat(),
+                "auto_reset_room": state.get("room_number"),
+            })
+            log_event("early_release")
+            st.session_state.pop("my_pin", None)
+            st.rerun()
 
     with st.expander("⚙️ 관리자"):
         with st.form("admin_reset_form"):
