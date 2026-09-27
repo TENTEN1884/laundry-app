@@ -301,6 +301,8 @@ if "kakao_id" not in st.session_state:
 
 query_params = st.query_params
 
+pending_local_storage_token = None
+
 if "code" in query_params and KAKAO_REST_API_KEY:
     token_data = kakao_exchange_code(query_params["code"])
     if token_data and token_data.get("access_token"):
@@ -314,18 +316,9 @@ if "code" in query_params and KAKAO_REST_API_KEY:
             )
             session_token = create_kakao_session(kakao_id)
             st.session_state["kakao_id"] = kakao_id
+            st.session_state["kakao_session_token"] = session_token
+            pending_local_storage_token = session_token
             log_event("kakao_login")
-            st.query_params.clear()
-            st.components.v1.html(
-                f"""
-                <script>
-                try {{ localStorage.setItem("{LOCAL_STORAGE_KEY}", "{session_token}"); }} catch (e) {{}}
-                window.location.href = window.location.pathname;
-                </script>
-                """,
-                height=0,
-            )
-            st.stop()
     st.query_params.clear()
 elif "session" in query_params:
     kakao_id = get_kakao_id_from_session(query_params["session"])
@@ -340,11 +333,21 @@ elif st.session_state.get("kakao_id") is None and not st.session_state.get("kaka
         try {{
             const t = localStorage.getItem("{LOCAL_STORAGE_KEY}");
             if (t) {{
-                const url = new URL(window.location.href);
+                const url = new URL(window.top.location.href);
                 url.searchParams.set("session", t);
-                window.location.href = url.toString();
+                window.top.location.href = url.toString();
             }}
         }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+    )
+
+if pending_local_storage_token:
+    st.components.v1.html(
+        f"""
+        <script>
+        try {{ localStorage.setItem("{LOCAL_STORAGE_KEY}", "{pending_local_storage_token}"); }} catch (e) {{}}
         </script>
         """,
         height=0,
@@ -368,17 +371,16 @@ if KAKAO_REST_API_KEY:
                 if token:
                     delete_kakao_session(token)
                 st.session_state["kakao_id"] = None
-                st.session_state["kakao_checked"] = False
+                st.session_state["kakao_checked"] = True
                 st.components.v1.html(
                     f"""
                     <script>
                     try {{ localStorage.removeItem("{LOCAL_STORAGE_KEY}"); }} catch (e) {{}}
-                    window.location.href = window.location.pathname;
                     </script>
                     """,
                     height=0,
                 )
-                st.stop()
+                st.rerun()
 
 now = datetime.now(timezone.utc) if state["end_time"] and state["end_time"].tzinfo else datetime.now()
 
