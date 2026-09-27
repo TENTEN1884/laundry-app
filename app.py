@@ -2,9 +2,12 @@ import streamlit as st
 import requests
 import time
 import json
+import hashlib
+import smtplib
 import secrets as pysecrets
 from urllib.parse import urlparse
 from email.header import Header
+from email.mime.text import MIMEText
 from datetime import datetime, timedelta, timezone
 
 # ── 1. Streamlit 비밀 금고(Secrets)에서 정보 가져오기 ──────────────
@@ -15,6 +18,8 @@ KAKAO_REST_API_KEY = st.secrets.get("KAKAO_REST_API_KEY", "")
 KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "")
 KAKAO_CLIENT_SECRET = st.secrets.get("KAKAO_CLIENT_SECRET", "")
 LAUNDRY_STATE_ID = int(st.secrets.get("LAUNDRY_STATE_ID", 1))
+EMAIL_SMTP_ADDRESS = st.secrets.get("EMAIL_SMTP_ADDRESS", "")
+EMAIL_SMTP_APP_PASSWORD = st.secrets.get("EMAIL_SMTP_APP_PASSWORD", "")
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
@@ -106,6 +111,32 @@ def send_ntfy_notification(ntfy_url, title, message):
     except:
         pass
 
+def send_email(to_email, subject, body):
+    if not (EMAIL_SMTP_ADDRESS and EMAIL_SMTP_APP_PASSWORD):
+        return
+    try:
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = EMAIL_SMTP_ADDRESS
+        msg["To"] = to_email
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+            server.starttls()
+            server.login(EMAIL_SMTP_ADDRESS, EMAIL_SMTP_APP_PASSWORD)
+            server.sendmail(EMAIL_SMTP_ADDRESS, [to_email], msg.as_string())
+    except Exception:
+        pass
+
+# ── 비밀번호 해시 (이메일 회원가입용) ────────────────────────────────
+def hash_password(password, salt=None):
+    if salt is None:
+        salt = pysecrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 100_000).hex()
+    return digest, salt
+
+def verify_password(password, salt, expected_hash):
+    digest, _ = hash_password(password, salt)
+    return digest == expected_hash
+
 # ── 방문/클릭 통계 (포트폴리오용 사용 데이터) ──────────────────────
 def log_event(event_type):
     try:
@@ -167,7 +198,7 @@ def kakao_refresh_access_token(refresh_token):
         pass
     return None
 
-def kakao_get_user_id(access_token):
+def kakao_get_user_info(access_token):
     try:
         res = requests.get(
             "https://kapi.kakao.com/v2/user/me",
@@ -175,12 +206,15 @@ def kakao_get_user_id(access_token):
             timeout=10,
         )
         if res.status_code == 200:
-            return res.json().get("id")
+            data = res.json()
+            kakao_id = data.get("id")
+            nickname = (data.get("properties") or {}).get("nickname")
+            return kakao_id, nickname
     except Exception:
         pass
-    return None
+    return None, None
 
-def save_kakao_user(kakao_id, access_token, refresh_token, expires_in):
+def save_kakao_user(kakao_id, access_token, refresh_token, expires_in, nickname=None):
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat()
     try:
         url = f"{SUPABASE_URL}/rest/v1/kakao_users"
@@ -191,6 +225,8 @@ def save_kakao_user(kakao_id, access_token, refresh_token, expires_in):
             "token_expires_at": expires_at,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        if nickname:
+            payload["nickname"] = nickname
         request_with_retry(
             "POST", url,
             headers={**SUPABASE_HEADERS, "Prefer": "resolution=merge-duplicates,return=representation"},
@@ -200,34 +236,103 @@ def save_kakao_user(kakao_id, access_token, refresh_token, expires_in):
     except Exception:
         pass
 
-def create_kakao_session(kakao_id):
+def create_app_session(user_type, user_id):
     token = pysecrets.token_urlsafe(32)
     try:
-        url = f"{SUPABASE_URL}/rest/v1/kakao_sessions"
-        request_with_retry("POST", url, headers=SUPABASE_HEADERS, json={"session_token": token, "kakao_id": kakao_id})
+        url = f"{SUPABASE_URL}/rest/v1/app_sessions"
+        request_with_retry("POST", url, headers=SUPABASE_HEADERS, json={"session_token": token, "user_type": user_type, "user_id": str(user_id)})
         return token
     except Exception:
         return None
 
-def get_kakao_id_from_session(session_token):
+def get_session_user(session_token):
     try:
-        url = f"{SUPABASE_URL}/rest/v1/kakao_sessions"
-        params = {"session_token": f"eq.{session_token}", "select": "kakao_id"}
+        url = f"{SUPABASE_URL}/rest/v1/app_sessions"
+        params = {"session_token": f"eq.{session_token}", "select": "user_type,user_id"}
         res = request_with_retry("GET", url, headers=SUPABASE_HEADERS, params=params)
         if res.status_code == 200:
             data = res.json()
             if data:
-                return data[0]["kakao_id"]
+                return data[0]["user_type"], data[0]["user_id"]
+    except Exception:
+        pass
+    return None, None
+
+def delete_app_session(session_token):
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/app_sessions"
+        request_with_retry("DELETE", url, headers=SUPABASE_HEADERS, params={"session_token": f"eq.{session_token}"})
+    except Exception:
+        pass
+
+def get_nickname(user_type, user_id):
+    try:
+        if user_type == "kakao":
+            url = f"{SUPABASE_URL}/rest/v1/kakao_users"
+            params = {"kakao_id": f"eq.{user_id}", "select": "nickname"}
+        else:
+            url = f"{SUPABASE_URL}/rest/v1/email_users"
+            params = {"email": f"eq.{user_id}", "select": "nickname"}
+        res = request_with_retry("GET", url, headers=SUPABASE_HEADERS, params=params)
+        if res.status_code == 200:
+            data = res.json()
+            if data and data[0].get("nickname"):
+                return data[0]["nickname"]
+    except Exception:
+        pass
+    return "회원"
+
+# ── 이메일 회원가입 / 로그인 ──────────────────────────────────────
+def create_email_user(email, password, nickname):
+    email = email.strip().lower()
+    password_hash, salt = hash_password(password)
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/email_users"
+        res = request_with_retry(
+            "POST", url,
+            headers={**SUPABASE_HEADERS, "Prefer": "return=representation"},
+            json={
+                "email": email,
+                "password_hash": password_hash,
+                "password_salt": salt,
+                "nickname": nickname.strip(),
+            },
+        )
+        if res.status_code in (200, 201):
+            return True, None
+        if res.status_code == 409:
+            return False, "이미 가입된 이메일이에요."
+        return False, "가입 중 오류가 발생했어요."
+    except Exception:
+        return False, "가입 중 오류가 발생했어요."
+
+def get_email_user(email):
+    email = email.strip().lower()
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/email_users"
+        params = {"email": f"eq.{email}", "select": "*"}
+        res = request_with_retry("GET", url, headers=SUPABASE_HEADERS, params=params)
+        if res.status_code == 200:
+            data = res.json()
+            if data:
+                return data[0]
     except Exception:
         pass
     return None
 
-def delete_kakao_session(session_token):
+def get_all_email_users():
     try:
-        url = f"{SUPABASE_URL}/rest/v1/kakao_sessions"
-        request_with_retry("DELETE", url, headers=SUPABASE_HEADERS, params={"session_token": f"eq.{session_token}"})
+        url = f"{SUPABASE_URL}/rest/v1/email_users"
+        res = request_with_retry("GET", url, headers=SUPABASE_HEADERS, params={"select": "*"})
+        if res.status_code == 200:
+            return res.json()
     except Exception:
         pass
+    return []
+
+def notify_all_email_users(subject, body):
+    for user in get_all_email_users():
+        send_email(user["email"], subject, body)
 
 def get_all_kakao_users():
     try:
@@ -294,40 +399,48 @@ if "visit_logged" not in st.session_state:
     log_event("page_view")
     st.session_state["visit_logged"] = True
 
-# ── 카카오 로그인 처리 (자동 로그인 유지 포함) ──────────────────────
-LOCAL_STORAGE_KEY = "laundry_kakao_session"
+# ── 로그인 처리 (카카오 / 이메일 통합, 자동 로그인 유지 포함) ──────────
+LOCAL_STORAGE_KEY = "laundry_session"
 
-if "kakao_id" not in st.session_state:
-    st.session_state["kakao_id"] = None
+if "user_type" not in st.session_state:
+    st.session_state["user_type"] = None
+    st.session_state["user_id"] = None
+    st.session_state["nickname"] = None
 
 query_params = st.query_params
 
-pending_local_storage_token = None
+pending_local_storage_token = st.session_state.pop("pending_ls_token", None)
 
 if "code" in query_params and KAKAO_REST_API_KEY:
     token_data = kakao_exchange_code(query_params["code"])
     if token_data and token_data.get("access_token"):
-        kakao_id = kakao_get_user_id(token_data["access_token"])
+        kakao_id, kakao_nickname = kakao_get_user_info(token_data["access_token"])
         if kakao_id:
+            kakao_nickname = kakao_nickname or "카카오 사용자"
             save_kakao_user(
                 kakao_id,
                 token_data["access_token"],
                 token_data.get("refresh_token", ""),
                 token_data.get("expires_in", 21599),
+                kakao_nickname,
             )
-            session_token = create_kakao_session(kakao_id)
-            st.session_state["kakao_id"] = kakao_id
-            st.session_state["kakao_session_token"] = session_token
+            session_token = create_app_session("kakao", kakao_id)
+            st.session_state["user_type"] = "kakao"
+            st.session_state["user_id"] = kakao_id
+            st.session_state["nickname"] = kakao_nickname
+            st.session_state["session_token"] = session_token
             pending_local_storage_token = session_token
             log_event("kakao_login")
     st.query_params.clear()
 elif "session" in query_params:
-    kakao_id = get_kakao_id_from_session(query_params["session"])
-    if kakao_id:
-        st.session_state["kakao_id"] = kakao_id
-        st.session_state["kakao_session_token"] = query_params["session"]
-elif st.session_state.get("kakao_id") is None and not st.session_state.get("kakao_checked"):
-    st.session_state["kakao_checked"] = True
+    user_type, user_id = get_session_user(query_params["session"])
+    if user_type:
+        st.session_state["user_type"] = user_type
+        st.session_state["user_id"] = user_id
+        st.session_state["nickname"] = get_nickname(user_type, user_id)
+        st.session_state["session_token"] = query_params["session"]
+elif st.session_state.get("user_type") is None and not st.session_state.get("session_checked"):
+    st.session_state["session_checked"] = True
     st.components.v1.html(
         f"""
         <script>
@@ -356,32 +469,97 @@ if pending_local_storage_token:
 
 state = load_state()
 
-st.title("🧺 세탁기 사용 현황 2")
+title_col, auth_col = st.columns([4, 2])
+with title_col:
+    st.title("🧺 세탁기 사용 현황 2")
 
-if KAKAO_REST_API_KEY:
-    login_col1, login_col2 = st.columns([3, 1])
-    with login_col1:
-        if st.session_state.get("kakao_id"):
-            st.caption("💬 카카오 로그인됨 — 세탁 완료 시 카카오톡으로 알려드려요.")
-        else:
-            st.caption(f"[💬 카카오로 로그인하고 완료 알림 받기]({kakao_login_url()})")
-    with login_col2:
-        if st.session_state.get("kakao_id"):
-            if st.button("로그아웃", key="kakao_logout", use_container_width=True):
-                token = st.session_state.get("kakao_session_token")
-                if token:
-                    delete_kakao_session(token)
-                st.session_state["kakao_id"] = None
-                st.session_state["kakao_checked"] = True
-                st.components.v1.html(
-                    f"""
-                    <script>
-                    try {{ localStorage.removeItem("{LOCAL_STORAGE_KEY}"); }} catch (e) {{}}
-                    </script>
-                    """,
-                    height=0,
-                )
-                st.rerun()
+is_logged_in = bool(st.session_state.get("user_type"))
+
+with auth_col:
+    st.write("")
+    if is_logged_in:
+        st.markdown(f"**{st.session_state.get('nickname') or '회원'}**님")
+        if st.button("로그아웃", key="logout_btn", use_container_width=True):
+            token = st.session_state.get("session_token")
+            if token:
+                delete_app_session(token)
+            st.session_state["user_type"] = None
+            st.session_state["user_id"] = None
+            st.session_state["nickname"] = None
+            st.session_state["session_checked"] = True
+            st.components.v1.html(
+                f"""<script>try {{ localStorage.removeItem("{LOCAL_STORAGE_KEY}"); }} catch (e) {{}}</script>""",
+                height=0,
+            )
+            st.rerun()
+    else:
+        if st.button("회원가입 / 로그인", key="open_auth_btn", use_container_width=True):
+            st.session_state["show_auth_panel"] = not st.session_state.get("show_auth_panel", False)
+
+if not is_logged_in and st.session_state.get("show_auth_panel"):
+    with st.container(border=True):
+        tab_kakao, tab_email = st.tabs(["💬 카카오로 계속하기", "📧 이메일로 계속하기"])
+
+        with tab_kakao:
+            if KAKAO_REST_API_KEY:
+                st.markdown(f"[💬 카카오로 회원가입 / 로그인]({kakao_login_url()})")
+                st.caption("카카오로 회원가입하면 완료 시 카카오톡 '나에게 보내기'로 알려드려요. (푸시 알림은 울리지 않을 수 있어요)")
+            else:
+                st.caption("카카오 로그인이 아직 설정되지 않았어요.")
+
+        with tab_email:
+            st.caption("메일로 회원가입하면 완료 시 이메일로 알려드려요.")
+            email_mode = st.radio("이메일 모드", ["로그인", "회원가입"], horizontal=True, key="email_mode", label_visibility="collapsed")
+
+            if email_mode == "회원가입":
+                with st.form("email_signup_form"):
+                    su_nickname = st.text_input("닉네임")
+                    su_email = st.text_input("이메일")
+                    su_password = st.text_input("비밀번호 (4자 이상)", type="password")
+                    su_submit = st.form_submit_button("회원가입", use_container_width=True)
+
+                    if su_submit:
+                        if not su_nickname.strip():
+                            st.error("닉네임을 입력해주세요.")
+                        elif "@" not in su_email:
+                            st.error("올바른 이메일을 입력해주세요.")
+                        elif len(su_password) < 4:
+                            st.error("비밀번호는 4자 이상으로 입력해주세요.")
+                        else:
+                            ok, err = create_email_user(su_email, su_password, su_nickname)
+                            if ok:
+                                email_norm = su_email.strip().lower()
+                                session_token = create_app_session("email", email_norm)
+                                st.session_state["user_type"] = "email"
+                                st.session_state["user_id"] = email_norm
+                                st.session_state["nickname"] = su_nickname.strip()
+                                st.session_state["session_token"] = session_token
+                                st.session_state["pending_ls_token"] = session_token
+                                st.session_state["show_auth_panel"] = False
+                                log_event("email_signup")
+                                st.rerun()
+                            else:
+                                st.error(err)
+            else:
+                with st.form("email_login_form"):
+                    li_email = st.text_input("이메일")
+                    li_password = st.text_input("비밀번호", type="password")
+                    li_submit = st.form_submit_button("로그인", use_container_width=True)
+
+                    if li_submit:
+                        user = get_email_user(li_email)
+                        if user and verify_password(li_password, user["password_salt"], user["password_hash"]):
+                            session_token = create_app_session("email", user["email"])
+                            st.session_state["user_type"] = "email"
+                            st.session_state["user_id"] = user["email"]
+                            st.session_state["nickname"] = user.get("nickname") or "회원"
+                            st.session_state["session_token"] = session_token
+                            st.session_state["pending_ls_token"] = session_token
+                            st.session_state["show_auth_panel"] = False
+                            log_event("email_login")
+                            st.rerun()
+                        else:
+                            st.error("이메일 또는 비밀번호가 일치하지 않습니다.")
 
 now = datetime.now(timezone.utc) if state["end_time"] and state["end_time"].tzinfo else datetime.now()
 
@@ -424,8 +602,9 @@ if state["is_running"] and state["end_time"]:
         if not state["notified"]:
             send_ntfy_notification(NTFY_URL, "🧺 세탁 완료!", "빨래가 끝났습니다. 세탁물을 수거해 주세요!")
             room_number = state.get("room_number")
-            kakao_text = f"{room_number}호 빨래가 끝났습니다! 세탁물을 수거해 주세요." if room_number else "빨래가 끝났습니다! 세탁물을 수거해 주세요."
-            notify_all_kakao_users(kakao_text)
+            notify_text = f"{room_number}호 빨래가 끝났습니다! 세탁물을 수거해 주세요." if room_number else "빨래가 끝났습니다! 세탁물을 수거해 주세요."
+            notify_all_kakao_users(notify_text)
+            notify_all_email_users("🧺 세탁 완료 알림", notify_text)
             state["notified"] = True
             save_state(state)
 else:
@@ -444,13 +623,15 @@ if not state["is_running"]:
     with st.form("start_form"):
         room_number = st.text_input("방 번호를 입력하세요 (예: 2008)")
         duration = st.number_input("소요 시간(분)을 입력하세요", min_value=5, max_value=180, value=45, step=5)
-        pin = st.text_input("본인확인용 비밀번호 4자리를 입력하세요", max_chars=4, type="password")
+        pin = None
+        if not is_logged_in:
+            pin = st.text_input("본인확인용 비밀번호 4자리를 입력하세요", max_chars=4, type="password")
         submitted = st.form_submit_button("세탁 시작하기 🚀", type="primary", use_container_width=True)
 
         if submitted:
             if not room_number.strip():
                 st.error("방 번호를 입력해주세요.")
-            elif not (pin.isdigit() and len(pin) == 4):
+            elif not is_logged_in and not (pin and pin.isdigit() and len(pin) == 4):
                 st.error("비밀번호는 숫자 4자리로 입력해주세요.")
             else:
                 new_state = {
@@ -461,7 +642,8 @@ if not state["is_running"]:
                     "room_number": room_number.strip(),
                 }
                 save_state(new_state)
-                st.session_state["my_pin"] = pin
+                if pin:
+                    st.session_state["my_pin"] = pin
                 log_event("start_wash")
                 st.rerun()
 else:
@@ -469,13 +651,22 @@ else:
     if state.get("room_number"):
         st.caption(f"현재 세탁 중: {state['room_number']}호")
 
-    if state.get("pin") and st.session_state.get("my_pin") == state.get("pin"):
+    if is_logged_in:
+        st.caption("✓ 로그인되어 있어서 비밀번호 없이 완료 처리할 수 있어요.")
+        if st.button("✅ 빨래 수거 완료 (세탁기 비우기)", use_container_width=True, key="member_complete"):
+            save_state({"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None})
+            st.session_state.pop("my_pin", None)
+            log_event("complete_wash")
+            st.rerun()
+    elif state.get("pin") and st.session_state.get("my_pin") == state.get("pin"):
         st.caption("✓ 이 브라우저에서 시작한 세탁물이라 비밀번호 없이 완료 처리할 수 있어요.")
         if st.button("✅ 빨래 수거 완료 (세탁기 비우기)", use_container_width=True, key="quick_complete"):
             save_state({"is_running": False, "end_time": None, "notified": False, "pin": None, "room_number": None})
             st.session_state.pop("my_pin", None)
             log_event("complete_wash")
             st.rerun()
+    elif not state.get("pin"):
+        st.caption("이 세탁물은 로그인한 회원이 시작해서 비밀번호가 없어요. 로그인 후 완료 처리해주세요.")
     else:
         with st.form("complete_form"):
             input_pin = st.text_input("본인확인용 비밀번호 4자리를 입력하세요", max_chars=4, type="password")
