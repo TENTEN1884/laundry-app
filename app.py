@@ -14,6 +14,7 @@ ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "")
 KAKAO_REST_API_KEY = st.secrets.get("KAKAO_REST_API_KEY", "")
 KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "")
 KAKAO_CLIENT_SECRET = st.secrets.get("KAKAO_CLIENT_SECRET", "")
+LAUNDRY_STATE_ID = int(st.secrets.get("LAUNDRY_STATE_ID", 1))
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
@@ -54,7 +55,7 @@ def request_with_retry(method, url, retries=2, **kwargs):
 def load_state():
     try:
         url = f"{SUPABASE_URL}/rest/v1/laundry_state"
-        params = {"id": "eq.1", "select": "*"}
+        params = {"id": f"eq.{LAUNDRY_STATE_ID}", "select": "*"}
         res = request_with_retry("GET", url, headers=SUPABASE_HEADERS, params=params)
 
         if res.status_code == 200:
@@ -72,7 +73,7 @@ def load_state():
                     "auto_reset_room": row.get("auto_reset_room"),
                 }
             elif len(data) == 0:
-                request_with_retry("POST", url, headers=SUPABASE_HEADERS, json={"id": 1, "is_running": False})
+                request_with_retry("POST", url, headers=SUPABASE_HEADERS, json={"id": LAUNDRY_STATE_ID, "is_running": False})
         else:
             st.error(f"Supabase 오류: {res.text}")
     except Exception as e:
@@ -82,7 +83,7 @@ def load_state():
 def save_state(state):
     try:
         url = f"{SUPABASE_URL}/rest/v1/laundry_state"
-        params = {"id": "eq.1"}
+        params = {"id": f"eq.{LAUNDRY_STATE_ID}"}
         end_time_str = state["end_time"].isoformat() if isinstance(state.get("end_time"), datetime) else None
         payload = {
             "is_running": state["is_running"],
