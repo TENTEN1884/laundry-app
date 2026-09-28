@@ -606,8 +606,9 @@ if state["is_running"] and state["end_time"]:
             send_ntfy_notification(NTFY_URL, "🧺 세탁 완료!", "빨래가 끝났습니다. 세탁물을 수거해 주세요!")
             room_number = state.get("room_number")
             notify_text = f"{room_number}호 빨래가 끝났습니다! 세탁물을 수거해 주세요." if room_number else "빨래가 끝났습니다! 세탁물을 수거해 주세요."
+            email_body = f"{room_number}호 세탁물 수거를 해주세요." if room_number else "세탁물 수거를 해주세요."
             notify_all_kakao_users(notify_text)
-            notify_all_email_users("🧺 세탁 완료 알림", notify_text)
+            notify_all_email_users("세탁물 처리가 끝났습니다", email_body)
             state["notified"] = True
             save_state(state)
 else:
