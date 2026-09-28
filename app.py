@@ -271,7 +271,7 @@ st.caption("🛠️ 오류가 발생하거나 앱이 작동하지 않을 때: [�
 
 # ── 4. 안정적인 네이티브 자동 새로고침 ─────────────────────────────
 if state["is_running"]:
-    time.sleep(5)
+    time.sleep(1)
     st.rerun()
 else:
     time.sleep(15)
