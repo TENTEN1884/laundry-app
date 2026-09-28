@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import time
 import json
+import os
 import hashlib
 import smtplib
 import secrets as pysecrets
@@ -23,18 +24,6 @@ EMAIL_SMTP_APP_PASSWORD = st.secrets.get("EMAIL_SMTP_APP_PASSWORD", "")
 EMAIL_SMTP_HOST = st.secrets.get("EMAIL_SMTP_HOST", "smtp.gmail.com")
 EMAIL_SMTP_PORT = int(st.secrets.get("EMAIL_SMTP_PORT", 587))
 EMAIL_SMTP_LOGIN = st.secrets.get("EMAIL_SMTP_LOGIN", "") or EMAIL_SMTP_ADDRESS
-
-# Firebase 웹 앱 설정값 (공개해도 안전한 값들 - Firebase 보안은 API 키 비공개가 아니라
-# Firebase 콘솔의 보안 규칙/앱 확인으로 이루어진다)
-FIREBASE_CONFIG = {
-    "apiKey": "AIzaSyBeXUAw5CVI3OQ6_fXSV4REaxaFfePSLFA",
-    "authDomain": "laundryapp-26dec.firebaseapp.com",
-    "projectId": "laundryapp-26dec",
-    "storageBucket": "laundryapp-26dec.firebasestorage.app",
-    "messagingSenderId": "521493217",
-    "appId": "1:521493217:web:eb13e38e690aaa3308b5a0",
-}
-FIREBASE_VAPID_KEY = "BJKG9cLBm7VzXXvWJ61GohXJ2yRUN_nm4oYtiULjqMIsUMcjGC17Dgo-WGAvucu_4qaGL0oLe_5aFYqPGD9JxC0"
 
 _parsed = urlparse(RAW_SUPABASE_URL.strip())
 if _parsed.scheme and _parsed.netloc:
@@ -512,78 +501,14 @@ with auth_col:
             st.session_state["show_auth_panel"] = not st.session_state.get("show_auth_panel", False)
 
 # ── 브라우저 푸시 알림 구독 (로그인 여부와 무관하게 이 기기에서 켤 수 있음) ──
-_push_html = f"""
-<div id="push-wrap" style="font-family: -apple-system, sans-serif;">
-  <button id="push-btn" style="padding: 6px 12px; border-radius: 8px; border: 1px solid #d0d0d0;
-    background: #f7f7f7; cursor: pointer; font-size: 13px;">🔔 완료 알림 받기 (브라우저 푸시)</button>
-  <span id="push-status" style="font-size: 13px; color: #666; margin-left: 8px;"></span>
-</div>
-<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-messaging-compat.js"></script>
-<script>
-(function() {{
-  var btn = document.getElementById('push-btn');
-  var statusEl = document.getElementById('push-status');
-  function setStatus(text) {{ statusEl.innerText = text; }}
-
-  if (!('Notification' in window) || !('serviceWorker' in navigator)) {{
-    setStatus('이 브라우저는 알림을 지원하지 않아요.');
-    btn.style.display = 'none';
-    return;
-  }}
-  if (Notification.permission === 'granted') {{
-    setStatus('🔔 알림이 켜져 있어요.');
-    btn.style.display = 'none';
-  }} else if (Notification.permission === 'denied') {{
-    setStatus('🔕 알림이 차단되어 있어요. 브라우저 사이트 설정에서 허용해주세요.');
-    btn.style.display = 'none';
-  }}
-
-  btn.addEventListener('click', async function() {{
-    btn.disabled = true;
-    setStatus('권한 요청 중...');
-    try {{
-      var permission = await Notification.requestPermission();
-      if (permission !== 'granted') {{
-        setStatus('🔕 알림 권한이 거부됐어요.');
-        btn.disabled = false;
-        return;
-      }}
-      firebase.initializeApp({json.dumps(FIREBASE_CONFIG)});
-      var messaging = firebase.messaging();
-      var reg = await navigator.serviceWorker.register('/static/firebase-messaging-sw.js', {{ scope: '/static/' }});
-      var token = await messaging.getToken({{ vapidKey: '{FIREBASE_VAPID_KEY}', serviceWorkerRegistration: reg }});
-      if (!token) {{
-        setStatus('토큰을 가져오지 못했어요. 다시 시도해주세요.');
-        btn.disabled = false;
-        return;
-      }}
-      var res = await fetch('{SUPABASE_URL}/rest/v1/device_tokens', {{
-        method: 'POST',
-        headers: {{
-          'apikey': '{SUPABASE_KEY}',
-          'Authorization': 'Bearer {SUPABASE_KEY}',
-          'Content-Type': 'application/json',
-          'Prefer': 'resolution=merge-duplicates'
-        }},
-        body: JSON.stringify({{ token: token, platform: 'web', state_id: {LAUNDRY_STATE_ID} }})
-      }});
-      if (res.ok) {{
-        setStatus('🔔 알림이 켜졌어요!');
-        btn.style.display = 'none';
-      }} else {{
-        setStatus('저장 중 오류가 발생했어요 (' + res.status + ')');
-        btn.disabled = false;
-      }}
-    }} catch (e) {{
-      setStatus('오류: ' + e.message);
-      btn.disabled = false;
-    }}
-  }});
-}})();
-</script>
-"""
-st.components.v1.html(_push_html, height=40)
+# components.v1.html은 srcdoc 기반 sandboxed iframe이라 origin이 opaque해서
+# 서비스워커 등록이 안 되고, Streamlit의 app/static/ 경로는 보안상 .js 확장자를
+# 서빙하지 않는다. 그래서 실제 파일 경로를 갖는 declare_component를 사용한다.
+_push_notify_component = st.components.v1.declare_component(
+    "push_notify",
+    path=os.path.join(os.path.dirname(__file__), "components", "push_notify"),
+)
+_push_notify_component()
 
 if not is_logged_in and st.session_state.get("show_auth_panel"):
     with st.container(border=True):

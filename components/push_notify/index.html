@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+  #push-btn {
+    padding: 6px 12px; border-radius: 8px; border: 1px solid #d0d0d0;
+    background: #f7f7f7; cursor: pointer; font-size: 13px;
+  }
+  #push-status { font-size: 13px; color: #666; margin-left: 8px; }
+</style>
+</head>
+<body>
+  <button id="push-btn">🔔 완료 알림 받기 (브라우저 푸시)</button>
+  <span id="push-status"></span>
+
+  <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-messaging-compat.js"></script>
+  <script>
+    // ── Streamlit 커스텀 컴포넌트 저수준 프로토콜 (streamlit-component-lib 없이 직접 구현) ──
+    function sendToStreamlit(type, data) {
+      var payload = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
+      window.parent.postMessage(payload, "*");
+    }
+    function setFrameHeight() {
+      sendToStreamlit("streamlit:setFrameHeight", { height: document.documentElement.scrollHeight });
+    }
+    sendToStreamlit("streamlit:componentReady", { apiVersion: 1 });
+    window.addEventListener("load", setFrameHeight);
+
+    // ── 설정값 (이 앱은 세탁기 사용 현황 2 전용이라 state_id=2로 고정) ──
+    var FIREBASE_CONFIG = {
+      apiKey: "AIzaSyBeXUAw5CVI3OQ6_fXSV4REaxaFfePSLFA",
+      authDomain: "laundryapp-26dec.firebaseapp.com",
+      projectId: "laundryapp-26dec",
+      storageBucket: "laundryapp-26dec.firebasestorage.app",
+      messagingSenderId: "521493217",
+      appId: "1:521493217:web:eb13e38e690aaa3308b5a0",
+    };
+    var FIREBASE_VAPID_KEY = "BJKG9cLBm7VzXXvWJ61GohXJ2yRUN_nm4oYtiULjqMIsUMcjGC17Dgo-WGAvucu_4qaGL0oLe_5aFYqPGD9JxC0";
+    var SUPABASE_URL = "https://drgiuzphovgqmelckjey.supabase.co";
+    var SUPABASE_KEY = "sb_publishable_DiWIz_z7TkqWELKFdwEuqQ_H_1ME8pP";
+    var STATE_ID = 2;
+
+    var btn = document.getElementById('push-btn');
+    var statusEl = document.getElementById('push-status');
+    function setStatus(text) { statusEl.innerText = text; setFrameHeight(); }
+
+    if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+      setStatus('이 브라우저는 알림을 지원하지 않아요.');
+      btn.style.display = 'none';
+    } else if (Notification.permission === 'granted') {
+      setStatus('🔔 알림이 켜져 있어요.');
+      btn.style.display = 'none';
+    } else if (Notification.permission === 'denied') {
+      setStatus('🔕 알림이 차단되어 있어요. 브라우저 사이트 설정에서 허용해주세요.');
+      btn.style.display = 'none';
+    }
+
+    btn.addEventListener('click', async function () {
+      btn.disabled = true;
+      setStatus('권한 요청 중...');
+      try {
+        var permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          setStatus('🔕 알림 권한이 거부됐어요.');
+          btn.disabled = false;
+          return;
+        }
+        firebase.initializeApp(FIREBASE_CONFIG);
+        var messaging = firebase.messaging();
+        var reg = await navigator.serviceWorker.register('./firebase-messaging-sw.js');
+        var token = await messaging.getToken({ vapidKey: FIREBASE_VAPID_KEY, serviceWorkerRegistration: reg });
+        if (!token) {
+          setStatus('토큰을 가져오지 못했어요. 다시 시도해주세요.');
+          btn.disabled = false;
+          return;
+        }
+        var res = await fetch(SUPABASE_URL + '/rest/v1/device_tokens', {
+          method: 'POST',
+          headers: {
+            'apikey': SUPABASE_KEY,
+            'Authorization': 'Bearer ' + SUPABASE_KEY,
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates',
+          },
+          body: JSON.stringify({ token: token, platform: 'web', state_id: STATE_ID }),
+        });
+        if (res.ok) {
+          setStatus('🔔 알림이 켜졌어요!');
+          btn.style.display = 'none';
+        } else {
+          setStatus('저장 중 오류가 발생했어요 (' + res.status + ')');
+          btn.disabled = false;
+        }
+      } catch (e) {
+        setStatus('오류: ' + e.message);
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
